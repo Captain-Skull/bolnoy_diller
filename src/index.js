@@ -24,6 +24,7 @@ const bot = new TelegramApi(token, {polling: true});
 // Your web app's Firebase configuration
 const firebaseConfig = {
   credential: admin.credential.cert(serviceAccount),
+  databaseURL: "https://bolnoy-shop-default-rtdb.europe-west1.firebasedatabase.app"
 };
 
 // Initialize Firebase
