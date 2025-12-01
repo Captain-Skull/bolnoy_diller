@@ -1,3 +1,4 @@
+// eslint-disable-next-line no-undef
 require('dotenv').config();
 // eslint-disable-next-line no-undef
 const express = require('express');
@@ -98,7 +99,8 @@ database.ref('paymentDetails').once('value').then((snapshot) => {
 СБЕРБАНК
 
 Карта: 2202206953213159`,
-    CryptoBot: 'http://t.me/send?start=IVGW3jJOOu59'
+    CryptoBot: 'http://t.me/send?start=IVGW3jJOOu59',
+    ByBit: '414616282'
   };
 });
 
@@ -138,7 +140,7 @@ const userCarts = {};
 async function getCbrUsdRate() {
   try {
     const response = await axios.get('https://www.cbr-xml-daily.ru/daily_json.js');
-    const usdRate = response.data.Valute.USD.Value;
+    const usdRate = Math.round((response.data.Valute.USD.Value * 1.06) * 100) / 100;
     const updateTime = new Date(response.data.Date).toLocaleString('ru-RU');
     return { usdRate, updateTime };
   } catch (error) {
@@ -459,6 +461,7 @@ const productCodesRef = database.ref('codes');
 
 // Для ожидания суммы пополнения и отправки чека
 let awaitingDeposit = {};  // Ожидание суммы для пополнения
+let awaitingBybitDeposit = {};
 let awaitingReceipt = {};  // Ожидание чека
 let awaitingPubgId = {};   // Ожидание ввода PUBG ID от пользователя
 let pendingChecks = {};    // Храним информацию о пользователях, чьи чеки ожидают подтверждения
@@ -792,6 +795,42 @@ ${paymentDetails.card}
   
       awaitingDeposit[chatId] = false;
       awaitingReceipt[chatId] = {
+        amount: rubToUsd(amount, usdRate),
+        userTag: userTag,
+        userId: chatId
+      };
+  
+      return;
+    } else if (awaitingBybitDeposit[chatId]) {
+      const amount = parseFloat(text); // Преобразуем введенное значение в число
+
+      if (isNaN(amount)) {
+        await bot.sendMessage(chatId, 'Вы отправили неккоректную сумму', {
+          reply_markup: {
+            inline_keyboard: [
+              [{text: '❌ Отмена', callback_data: 'my-profile'}]
+            ]
+          }
+        });
+        return;
+      }
+
+      bot.sendMessage(chatId, `Совершите перевод на указанную вами сумму ⤵️
+${paymentDetails.bybit}
+Сумма: ${amount}$ (${amount*usdRate}₽)
+
+В ОТВЕТНОМ СООБЩЕНИИ ПРИШЛИТЕ ЧЕК ТРАНЗАКЦИИ`, {
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [
+              [{text: '❌ Отмена', callback_data: 'my-profile'}]
+            ]
+          }
+        }
+      )
+  
+      awaitingBybitDeposit[chatId] = false;
+      awaitingReceipt[chatId] = {
         amount: amount,
         userTag: userTag,
         userId: chatId
@@ -817,7 +856,7 @@ ${paymentDetails.card}
       sendDepositRequest(
         `🆕 Запрос на пополнение баланса\n` +
         `👤 Пользователь: ${userTag} (ID: ${chatId})\n` +
-        `💵 Сумма: ${userInfo.amount}₽ (${rubToUsd(userInfo.amount, usdRate)}$)\n` +
+        `💵 Сумма: ${userInfo.amount}$ (${userInfo.amount * usdRate}₽)\n` +
         `📅 Время: ${new Date().toLocaleString()}`,
         [
           [
@@ -1291,7 +1330,10 @@ bot.on('callback_query', async (query) => {
           inline_keyboard: [
             [
               { text: 'ByBit', callback_data: 'select-payment-method_ByBit' },
+            ], [
               { text: 'CryptoBot', callback_data: 'select-payment-method_CryptoBot' }
+            ],  [
+              { text: 'Карта', callback_data: 'select-payment-method_card' }
             ],
             [{ text: '❌ Отмена', callback_data: 'admin-panel' }]
           ]
@@ -1778,7 +1820,8 @@ ${details}`;
         message_id: messageId,
         reply_markup: {
           inline_keyboard: [
-            [{text: 'Перевод по карте', callback_data: 'deposit-with-card'}],
+            [{text: '💳Перевод по карте', callback_data: 'deposit-with-card'}],
+            [{text: '🔸ByBit', callback_data: 'deposit-with-bybit'}],
             [{text: '🔹CryptoBot', callback_data: 'deposit-with-cryptobot'}],
             [{text: '❌ Отмена', callback_data: 'my-profile'}]
           ]
@@ -1836,6 +1879,24 @@ ${details}`;
       database.ref('cryptobotDeposits').set(cryptobotDeposits);
     
         return;
+    } else if (data === 'deposit-with-bybit') {
+      await bot.editMessageMedia({
+        type: 'photo',
+        media: IMAGES.amount,
+        caption: 'Отправьте сумму, на которую хотите пополнить баланс (в $): '
+      }, {
+        chat_id: chatId,
+        message_id: messageId,
+        reply_markup: {
+          inline_keyboard: [
+            [{text: '❌ Отмена', callback_data: 'my-profile'}]
+          ]
+        }
+      })
+
+      awaitingBybitDeposit[chatId] = true;
+
+      return;
     }
   } catch (error) {
     if (error.code === 'EFATAL' && error.response?.statusCode === 403) {
