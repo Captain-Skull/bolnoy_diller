@@ -816,7 +816,7 @@ ${paymentDetails.card}
       }
 
       bot.sendMessage(chatId, `Совершите перевод на указанную вами сумму ⤵️
-${paymentDetails.bybit}
+<code>${paymentDetails.ByBit}</code>
 Сумма: ${amount}$ (${amount*usdRate}₽)
 
 В ОТВЕТНОМ СООБЩЕНИИ ПРИШЛИТЕ ЧЕК ТРАНЗАКЦИИ`, {
@@ -1538,16 +1538,15 @@ ${details}`;
   
       if (userInfo) {
         const depositAmount = userInfo.amount;
-        const usdDepositAmount = rubToUsd(depositAmount, usdRate)
   
         // Обновляем баланс пользователя
-        userBalances[userId] = (userBalances[userId] || 0) + usdDepositAmount;
+        userBalances[userId] = (userBalances[userId] || 0) + depositAmount;
   
         database.ref('userBalances').set(userBalances);
   
         // Оповещаем администратора и пользователя
-        sendDepositRequest(`Пополнение на ${usdDepositAmount}$ для ${userInfo.userTag} (ID: ${userId}) подтверждено.`)
-        bot.sendMessage(userId, `Ваш баланс был пополнен на ${usdDepositAmount}$. Текущий баланс: ${userBalances[userId]}$.`);
+        sendDepositRequest(`Пополнение на ${depositAmount}$ для ${userInfo.userTag} (ID: ${userId}) подтверждено.`)
+        bot.sendMessage(userId, `Ваш баланс был пополнен на ${depositAmount}$. Текущий баланс: ${userBalances[userId]}$.`);
   
         // Очищаем информацию о запросе
         delete pendingChecks[userId];
