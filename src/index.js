@@ -8,8 +8,6 @@ const axios = require('axios');
 
 app.use(express.json());
 
-// const port = process.env.PORT || 3000;
-
 // eslint-disable-next-line no-undef
 const TelegramApi = require('node-telegram-bot-api');
 // eslint-disable-next-line no-undef
@@ -22,20 +20,17 @@ const serviceAccount = require('../secrets/serviceAccountKey.json');
 const token = process.env.token;
 const bot = new TelegramApi(token, {polling: true});
 
-// Your web app's Firebase configuration
 const firebaseConfig = {
   credential: admin.credential.cert(serviceAccount),
   databaseURL: "https://bolnoy-shop-default-rtdb.europe-west1.firebasedatabase.app"
 };
 
-// Initialize Firebase
 admin.initializeApp(firebaseConfig);
 
-// Получаем доступ к Realtime Database
 const database = admin.database();
 
 // eslint-disable-next-line no-undef
-const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID; // ID группы для отправки сообщений администраторам
+const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
 // eslint-disable-next-line no-undef
 const DEPOSIT_GROUP_ID = process.env.DEPOSIT_GROUP_ID;
 // eslint-disable-next-line no-undef
@@ -46,7 +41,6 @@ const CRYPTOBOT_ID = process.env.CRYPTOBOT_ID;
 let admins = {};
 database.ref('admins').once('value').then((snapshot) => {
   admins = snapshot.val() || {};
-  // Если список администраторов пуст, добавляем первого админа
   if (!Object.keys(admins).length) {
     admins[ADMIN_CHAT_ID.toString()] = true;
     database.ref('admins').set(admins);
@@ -59,6 +53,10 @@ function isAdmin(chatId) {
     return true;
   }
   return false;
+}
+
+function capitalizeFirstLetter(string) {
+return string.charAt(0).toUpperCase() + string.slice(1);
 }
 
 function sendDepositRequest(message, inlineKeyboard = null) {
@@ -104,31 +102,35 @@ database.ref('paymentDetails').once('value').then((snapshot) => {
   };
 });
 
-// Загрузка товаров
-let products = [];
+let productsCodes = [];
 let productsId = [];
-const idCom = 1.025
 
-database.ref('products').once('value').then((snapshot) => {
-  products = snapshot.val() || [  { label: '60', price: 0.86 },
+database.ref('productsCodes').once('value').then((snapshot) => {
+  productsCodes = snapshot.val() || [  { label: '60', price: 0.86 },
     { label: '325', price: 4.30 },
     { label: '660', price: 8.45 },
     { label: '1800', price: 21.50 },
     { label: '3850', price: 42.00 },
     { label: '8100', price: 81.50 },
   ];
-  productsId = products.map(product => {
-    const increasedPrice = product.price * idCom; // Увеличиваем на 4.5%
-    const roundedPrice = Math.round(increasedPrice * 100) / 100; // Округляем до сотых
-    
-    return {
-      label: product.label,
-      price: roundedPrice
-    };
-  });
 });
 
-// Загрузка балансов пользователей
+database.ref('productsId').once('value').then((snapshot) => {
+  productsId = snapshot.val() || [];
+})
+
+let productsPopularity = [];
+
+database.ref('productsPopularity').once('value').then((snapshot) => {
+  productsPopularity = snapshot.val() || [];
+})
+
+let productsSubs = [];
+
+database.ref('productsSubs').once('value').then((snapshot) => {
+  productsSubs = snapshot.val() || [];
+})
+
 let userBalances = {};
 
 database.ref('userBalances').once('value').then((snapshot) => {
@@ -159,12 +161,41 @@ const safeRound = (num) => {
   return match ? Number(stringNum.slice(0, match.index + 3)) : num;
 };
 
-// Функция обновления сообщения с корзиной
+const getCurrentProducts = (type) => {
+  switch (type) {
+    case 'id':
+      return productsId;
+    case 'codes':
+      return productsCodes;
+    case 'popularity':
+      return productsPopularity;
+    case 'subs':
+      return productsSubs;
+  }
+}
+
+const updateProducts = async (type, newProducts) => {
+  switch (type) {
+    case 'id':
+      productsId = newProducts;
+      break;
+    case 'codes':
+      productsCodes = newProducts;
+      break;
+    case 'popularity':
+      productsPopularity = newProducts;
+      break;
+    case 'subs':
+      productsSubs = newProducts;
+      break;
+  }
+
+  await database.ref(`products${capitalizeFirstLetter(type)}`).set(newProducts);
+}
 
 const generateShopKeyboard = async (cart, type) => {
-  const prods = type === 'id' ? productsId : products;
+  const prods = getCurrentProducts(type);
   
-  // Создаем хеш-таблицу для быстрого подсчета количества в корзине
   let counts = {};
   if (cart) {
     counts = cart.items.reduce((acc, item) => {
@@ -173,19 +204,15 @@ const generateShopKeyboard = async (cart, type) => {
     }, {});
   }
 
-  // Если тип - codes, получаем количество доступных кодов для каждого товара
   let availableCodes = {};
   if (type === 'codes') {
     try {
       const codesSnapshot = await database.ref('codes').once('value');
       const codesData = codesSnapshot.val() || {};
       
-      // Перебираем все товары (60, 325, 660 и т.д.)
       Object.entries(codesData).forEach(([productLabel, productCodes]) => {
-        // Перебираем все коды для данного товара
         Object.values(productCodes).forEach(codeObj => {
           if (codeObj.used === false && codeObj.code) {
-            // Используем productLabel (60, 325 и т.д.) как ключ
             availableCodes[productLabel] = (availableCodes[productLabel] || 0) + 1;
           }
         });
@@ -195,16 +222,15 @@ const generateShopKeyboard = async (cart, type) => {
     }
   }
 
-  // Генерируем кнопки с актуальным количеством
   const buttons = prods.map(p => {
     const inCart = counts ? counts[p.label] || 0 : 0;
     
     let buttonText;
     if (type === 'codes') {
       const available = availableCodes[p.label] || 0;
-      buttonText = `${p.label} UC - ${p.price}$ (${inCart}/${available})`;
+      buttonText = `${p.label} - ${p.price}$ (${inCart}/${available})`;
     } else {
-      buttonText = `${p.label} UC - ${p.price}$ (×${inCart})`;
+      buttonText = `${p.label} - ${p.price}$ (×${inCart})`;
     }
 
     return {
@@ -220,11 +246,10 @@ const generateShopKeyboard = async (cart, type) => {
 
   if (type === 'codes') {
     rows.push([{ text: '🛒 Купить кодами', callback_data: 'cart_buy-codes'}])
-  } else if (type === 'id') {
-    rows.push([{ text: '🛒 Купить по ID', callback_data: 'cart_buy-with-id' }])
+  } else {
+    rows.push([{ text: '🛒 Купить по ID', callback_data: `cart_buy-with-id_${type}` }])
   }
 
-  // Добавляем управляющие кнопки
   rows.push(
     [
       { text: '🗑 Очистить корзину', callback_data: `cart_clear_${type}` }
@@ -239,34 +264,30 @@ const generateShopKeyboard = async (cart, type) => {
 
 async function updateCartMessage(chatId, messageId, type) {
   const cart = userCarts[chatId] || { items: [], total: 0 };
-  const caption = generateCartText(cart);
+  const caption = generateCartText(cart, type);
   const keyboard = { inline_keyboard: await generateShopKeyboard(cart, type) };
 
   try {
     if (messageId) {
-      // Пытаемся отредактировать существующее сообщение
       await bot.editMessageCaption(caption, {
         chat_id: chatId,
         message_id: messageId,
         parse_mode: 'HTML',
         reply_markup: keyboard
       });
-      return messageId; // Возвращаем тот же messageId
+      return messageId;
     }
   } catch (editError) {
-    // Если сообщение не найдено, отправляем новое
     if (editError.response?.description.includes('message to edit not found')) {
       return await sendNewCartMessage(chatId, caption, keyboard);
     }
   }
 
-  // Если messageId нет или редактирование не удалось
   return await sendNewCartMessage(chatId, caption, keyboard);
 }
 
 async function sendNewCartMessage(chatId, caption, keyboard) {
   try {
-    // Пытаемся отправить с фото
     const sentMessage = await bot.sendPhoto(chatId, IMAGES.pack, {
       caption: caption,
       parse_mode: 'HTML',
@@ -278,7 +299,6 @@ async function sendNewCartMessage(chatId, caption, keyboard) {
   } catch (photoError) {
     console.error('Ошибка отправки фото:', photoError.message);
     
-    // Фолбэк на текстовое сообщение
     const sentMessage = await bot.sendMessage(chatId, caption, {
       parse_mode: 'HTML',
       reply_markup: keyboard
@@ -288,10 +308,9 @@ async function sendNewCartMessage(chatId, caption, keyboard) {
   }
 }
 
-// Генерация текста корзины
-function generateCartText(cart) {
+function generateCartText(cart, type) {
   if (!cart) {
-    return `<b>➤ Выберите UC для покупки (можно несколько) 
+    return `<b>➤ Выберите товар для покупки (можно несколько) 
 🛒 Ваша корзина пуста</b>\n`;
   }
 
@@ -301,24 +320,21 @@ function generateCartText(cart) {
   }, {});
   
   const itemsText = Object.entries(itemsCount)
-    .map(([label, count]) => `<b>➥ ${label} UC × ${count} = ${Math.round(count * products.find(p => p.label === label).price * 100) / 100 }$</b>`)
+    .map(([label, count]) => `<b>➥ ${label} × ${count} = ${Math.round(count * getCurrentProducts(type).find(p => p.label === label).price * 100) / 100 }$</b>`)
     .join('\n');
   
-  return `<b>➤ Выберите UC для покупки (можно несколько)
+  return `<b>➤ Выберите товар для покупки (можно несколько)
 🛒 Ваша корзина:\n\n${itemsText}\n\n✦ Итого: <u>${cart.total}$</u></b>`;
 }
 
-// Обработка покупки
-async function purchaseWithId(chatId, messageId) {
+async function purchaseWithId(chatId, messageId, type) {
   const cart = userCarts[chatId];
   
   if (!cart || cart.items.length === 0) {
-    // await bot.answerCallbackQuery(query.id, { text: '❌ Корзина пуста!' });
     return;
   }
   
   if (userBalances[chatId] < cart.total) {
-    // await bot.answerCallbackQuery(query.id, { text: '❌ Недостаточно средств!' });
     await bot.sendMessage(chatId, '❌ Недостаточно средств! Пополните свой баланс.', {
       reply_markup: {
         inline_keyboard: [[{text: '💳Пополнить баланс', callback_data: 'deposit'}],]
@@ -327,7 +343,10 @@ async function purchaseWithId(chatId, messageId) {
     return;
   }
 
-  awaitingPubgId[chatId] = cart;
+  awaitingPubgId[chatId] = {
+    cart: cart,
+    type: type
+  };
 
   bot.editMessageCaption('✦ Отправьте игровой ID для зачисления товара! ', {
     chat_id: chatId,
@@ -340,7 +359,6 @@ async function purchaseWithId(chatId, messageId) {
   })
 }
 
-// Модифицировать функцию покупки кодами
 const purchaseCodes = async (chatId, messageId, firstName, lastName) => {
   const cart = userCarts[chatId];
   if (!cart || cart.items.length === 0) {
@@ -348,7 +366,6 @@ const purchaseCodes = async (chatId, messageId, firstName, lastName) => {
     return;
   }
 
-  // Проверка баланса
   if (userBalances[chatId] < cart.total) {
     await bot.sendMessage(chatId, '❌ Недостаточно средств! Пополните баланс.', {
       reply_markup: {
@@ -358,7 +375,6 @@ const purchaseCodes = async (chatId, messageId, firstName, lastName) => {
     return;
   }
 
-  // Проверка наличия кодов
   const requiredCodes = cart.items.reduce((acc, item) => {
     acc[item.label] = (acc[item.label] || 0) + 1;
     return acc;
@@ -378,7 +394,6 @@ const purchaseCodes = async (chatId, messageId, firstName, lastName) => {
     return;
   }
 
-  // Резервирование кодов
   const codesToSend = {};
   for (const label of Object.keys(requiredCodes)) {
     const snapshot = await database.ref(`codes/${label}`)
@@ -390,7 +405,6 @@ const purchaseCodes = async (chatId, messageId, firstName, lastName) => {
     const codes = snapshot.val();
     codesToSend[label] = Object.keys(codes).map(key => codes[key].code);
 
-    // Пометить коды как использованные
     const updates = {};
     Object.keys(codes).forEach(key => {
       updates[`codes/${label}/${key}/used`] = true;
@@ -398,11 +412,9 @@ const purchaseCodes = async (chatId, messageId, firstName, lastName) => {
     await database.ref().update(updates);
   }
 
-  // Списание средств
   userBalances[chatId] -= cart.total;
   await database.ref(`userBalances/${chatId}`).set(userBalances[chatId]);
 
-  // Сохранение заказа
   const orderNumber = Date.now().toString(36).toUpperCase() + chatId.toString().slice(-4);
   const orderData = {
     orderId: orderNumber,
@@ -434,10 +446,8 @@ const purchaseCodes = async (chatId, messageId, firstName, lastName) => {
     codesMessage += `➥ ${label} UC:\n${formattedCodes}\n\n`;
   }
 
-  // Отправка кодов пользователю
   let message = '✅ Ваши коды:\n\n' + codesMessage;
 
-  // Очистка корзины
   delete userCarts[chatId];
   
   await bot.sendMessage(chatId, message, {
@@ -445,8 +455,6 @@ const purchaseCodes = async (chatId, messageId, firstName, lastName) => {
   });
   sendMainMessage(chatId, firstName, lastName);
   await bot.deleteMessage(chatId, messageId);
-
-  // Уведомление админам
 
   sendOrderRequest(`✅ Новый заказ кодами #${orderNumber}\n` +
     `Пользователь: ${firstName} ${lastName} (ID: ${chatId})\n` +
@@ -459,12 +467,11 @@ const ordersRef = database.ref('orders');
 let awaitingCodesForProduct = {};
 const productCodesRef = database.ref('codes');
 
-// Для ожидания суммы пополнения и отправки чека
-let awaitingDeposit = {};  // Ожидание суммы для пополнения
+let awaitingDeposit = {};
 let awaitingBybitDeposit = {};
-let awaitingReceipt = {};  // Ожидание чека
-let awaitingPubgId = {};   // Ожидание ввода PUBG ID от пользователя
-let pendingChecks = {};    // Храним информацию о пользователях, чьи чеки ожидают подтверждения
+let awaitingReceipt = {};
+let awaitingPubgId = {};
+let pendingChecks = {};
 let customersOrders = {};
 let awaitingToChangeProduct = {};
 let awaitingNewProductLabel = {};
@@ -487,7 +494,7 @@ database.ref('cryptobotDeposits').once('value').then((snapshot) => {
 
 const adminPanelKeyboard = [
   [
-    {text: '🛠 Товары', callback_data: 'manage-products'},
+    {text: '🛠 Товары', callback_data: 'manage-category'},
     {text: '💳 Реквизиты', callback_data: 'edit-payment-details'}
   ],
   [
@@ -514,7 +521,7 @@ const IMAGES = {
 const sendMainMessage = async (chatId, firstName, lastName, messageToEdit = null) => {
   const greetingName = lastName ? `${firstName} ${lastName}` : firstName;
   const inlineKeyboard = [
-      [{text: '🛒Купить UC', callback_data: 'open-shop'}],
+      [{text: '🛒Каталог', callback_data: 'open-shop'}],
       [
           {text: '📦Мои заказы', callback_data: 'my-orders'}, 
           {text: '👤Мой профиль', callback_data: 'my-profile'}
@@ -522,6 +529,9 @@ const sendMainMessage = async (chatId, firstName, lastName, messageToEdit = null
       [
           {text: '🔗Наш канал', url: 'https://t.me/POSTAVKABOJLHOGO'}, 
           {text: '⚙️Тех.поддержка', url: 'https://t.me/BoJlHoy'}
+      ],
+      [
+        { text: '📖Отзывы', url: 'https://t.me/Bolnojot' }
       ]
   ];
   
@@ -559,11 +569,28 @@ const sendMainMessage = async (chatId, firstName, lastName, messageToEdit = null
 bot.onText(/\/start(?: (.+))?/, (msg) => {
   const chatId = msg.chat.id;
 
+  awaitingPubgId[chatId] = false;
+  awaitingDeposit[chatId] = false;
+  awaitingReceipt[chatId] = false;
+  awaitingDeposit[chatId] = false;
+  awaitingReceipt[chatId] = false;
+  awaitingPubgId[chatId] = false;
+  awaitingToChangeProduct[chatId] = false;
+  awaitingNewProductLabel[chatId] = false;
+  awaitingNewProductPrice[chatId] = false;
+  awaitingToChangeCredentials[chatId] = false;
+  awaitingUserToChangeBalance[chatId] = false;
+  awaitingToChangeBalance[chatId] = false;
+  awaitingToCreateMailing[chatId] = false;
+  awaitingToAddAdmin[chatId] = false;
+  awaitingToRemoveAdmin[chatId] = false;
+  cryptobotDeposits[chatId] = false;
+  database.ref('cryptobotDeposits').set(cryptobotDeposits);
+
   try {
     if (!userBalances[chatId]) {
-      userBalances[chatId] = 0; // Устанавливаем баланс, если он не был установлен
+      userBalances[chatId] = 0;
       
-      // Сохраняем нового пользователя в базе данных
       database.ref(`userBalances/${chatId}`).set(userBalances[chatId])
       .catch((error) => {
           console.error(`Error adding user to database: ${error}`);
@@ -581,61 +608,51 @@ bot.onText(/\/start(?: (.+))?/, (msg) => {
 
 });
 
-// Получаем тег пользователя (имя пользователя или имя)
 const getUserTag = (msg) => {
   const username = msg.from.username ? `@${msg.from.username}` : `${msg.from.first_name || 'Пользователь'}`;
   return username;
 };
 
-// Обработка сообщений от пользователя
 bot.on('message', async (msg) => {
   try {
     const chatId = msg.chat.id;
     const text = msg.text;
-    const userTag = getUserTag(msg); // Получаем тег пользователя
+    const userTag = getUserTag(msg);
     const cbrData = await getCbrUsdRate();
     const usdRate = cbrData.usdRate
 
     const replyToMessage = msg.reply_to_message;
   
-    // Если сообщение пришло от админа и это ответ на пересланное сообщение
     if (isAdmin(chatId) && replyToMessage) {
       const userId = replyToMessage.forward_from.id;
   
-      // Пересылаем ответ админу пользователю
       bot.sendMessage(userId, `Ответ от администратора: ${msg.text}`).then(() => {
         sendMessageToAllAdmins(`Ответ от ${userTag} пользователю с ID ${userId} был отправлен.`)
       });
     }
 
-      // Проверяем что сообщение от CryptoBot в нужной группе
     if (msg.chat.id == DEPOSIT_GROUP_ID && msg.from?.id == CRYPTOBOT_ID) {
       const messageText = msg.text;
       const lines = messageText.split(' ');
 
-      // Парсинг данных из сообщения
       const senderIndex = lines.findIndex(line => line === 'отправил(а)');
       
-      // Проверяем структуру сообщения
       if (senderIndex === -1 || 
           senderIndex + 2 >= lines.length || 
           lines[senderIndex + 1] !== '🪙') {
           return bot.sendMessage(DEPOSIT_GROUP_ID, '❌ Ошибка парсинга данных перевода');
       }
   
-      // Парсинг данных
       const paymentData = {
           username: lines.slice(0, senderIndex).join(' ').trim(),
-          amount: parseFloat(lines[senderIndex + 2].replace(',', '.')), // Убрано округление
+          amount: parseFloat(lines[senderIndex + 2].replace(',', '.')),
           currency: 'USDT'
       };
   
-      // Валидация
       if (!paymentData.username || isNaN(paymentData.amount)) {
           return bot.sendMessage(DEPOSIT_GROUP_ID, '❌ Ошибка парсинга данных перевода');
       }
   
-      // Поиск соответствующего заказа
       const depositsSnapshot = await database.ref('cryptobotDeposits').once('value');
       const deposits = depositsSnapshot.val() || {};
   
@@ -646,17 +663,13 @@ bot.on('message', async (msg) => {
       const messageId = deposit.messageId
   
       if (userId && messageId && deposit) {
-        // Удаление записи о депозите
         await database.ref(`cryptobotDeposits/${userId}`).remove();
 
-        // Округление только при наличии "девяток"
         const cleanedAmount = safeRound(paymentData.amount);
 
-        // Обновление баланса
         userBalances[userId] = (userBalances[userId] || 0) + cleanedAmount;
         await database.ref(`userBalances/${userId}`).set(userBalances[userId]);
 
-        // Уведомления
         bot.sendMessage(
             DEPOSIT_GROUP_ID,
             `✅ Перевод ${cleanedAmount} ${paymentData.currency} подтвержден\n` +
@@ -685,15 +698,14 @@ bot.on('message', async (msg) => {
       }
     }
   
-    // Если бот ждет ID в PUBG
     if (awaitingPubgId[chatId]) {
-      const pubgId = text; // Получаем ID пользователя в PUBG
+      const pubgId = text;
   
-      const cart = userCarts[chatId];
+      const cart = awaitingPubgId[chatId].type;
+      const type = awaitingPubgId[chatId].type;
   
       const orderNumber = Date.now().toString(36).toUpperCase() + chatId.toString().slice(-4);
   
-      // Форматируем список товаров
       const itemsDetails = cart.items.reduce((acc, item) => {
           acc[item.label] = (acc[item.label] || 0) + 1;
           return acc;
@@ -701,19 +713,18 @@ bot.on('message', async (msg) => {
   
       const itemsText = Object.entries(itemsDetails)
           .map(([label, count]) => {
-              const product = products.find(p => p.label === label);
-              return `➥ ${label} UC ×${count} = ${(product.price * count)}$`;
+              const product = getCurrentProducts(type).find(p => p.label === label);
+              return `➥ ${label} × ${count} = ${(product.price * count)}$`;
           })
           .join('\n');
   
-      // Списание средств
       userBalances[chatId] -= cart.total;
       database.ref(`userBalances/${chatId}`).set(userBalances[chatId]);
   
       const orderData = {
         orderId: orderNumber,
         userId: chatId,
-        type: 'id',
+        type: type,
         pubgId: pubgId,
         items: cart.items,
         total: cart.total,
@@ -726,7 +737,6 @@ bot.on('message', async (msg) => {
         }
       };
   
-      // Сохраняем заказ в Firebase
       try {
           ordersRef.child(chatId).child(orderNumber).set(orderData);
       } catch (error) {
@@ -734,9 +744,9 @@ bot.on('message', async (msg) => {
           return bot.sendMessage(chatId, '❌ Ошибка оформления заказа, попробуйте позже');
     }
       
-      // Отправка заказа админам
       const orderText = `✅Новый заказ 
   🧾#${orderNumber} 
+  Категория: ${type}
   🛍Товары : 
   ${itemsText} 
   💵Стоимость : ${cart.total} 
@@ -749,7 +759,6 @@ bot.on('message', async (msg) => {
         { text: '❌ Отменить заказ', callback_data: `order-declined_${chatId}_${orderNumber}_${cart.total}`}
       ]])
       
-      // Очистка корзины
       delete userCarts[chatId];
   
       bot.sendMessage(chatId, '✅ ID успешно отправлен, ожидайте подтверждение администратора', {
@@ -761,11 +770,11 @@ bot.on('message', async (msg) => {
       });
   
       customersOrders[chatId] = true;
-      awaitingPubgId[chatId] = false; // Завершаем ожидание ID в PUBG
+      awaitingPubgId[chatId] = false;
       
       return;
     } else if (awaitingDeposit[chatId]) {
-      const amount = parseFloat(text); // Преобразуем введенное значение в число
+      const amount = parseFloat(text);
 
       if (isNaN(amount)) {
         await bot.sendMessage(chatId, 'Вы отправили неккоректную сумму', {
@@ -778,7 +787,6 @@ bot.on('message', async (msg) => {
         return;
       }
   
-      // Отправляем сообщение с реквизитами для перевода
       bot.sendMessage(chatId, `Совершите перевод на указанную вами сумму ⤵️
 ${paymentDetails.card}
 Сумма: ${amount}₽ (${rubToUsd(amount, usdRate)}$)
@@ -802,7 +810,7 @@ ${paymentDetails.card}
   
       return;
     } else if (awaitingBybitDeposit[chatId]) {
-      const amount = parseFloat(text); // Преобразуем введенное значение в число
+      const amount = parseFloat(text);
 
       if (isNaN(amount)) {
         await bot.sendMessage(chatId, 'Вы отправили неккоректную сумму', {
@@ -838,7 +846,6 @@ ${paymentDetails.card}
   
       return;
     } else if (awaitingReceipt[chatId]) {
-      // Пересылаем чек администратору
       bot.forwardMessage(DEPOSIT_GROUP_ID, chatId, msg.message_id);
       pendingChecks[chatId] = {
         amount: awaitingReceipt[chatId].amount,
@@ -851,7 +858,6 @@ ${paymentDetails.card}
   
       sendMainMessage(chatId, msg.chat.first_name, msg.chat.last_name);
       
-      // Оповещаем администратора о запросе на проверку чека
       const userInfo = pendingChecks[chatId];
       sendDepositRequest(
         `🆕 Запрос на пополнение баланса\n` +
@@ -866,22 +872,23 @@ ${paymentDetails.card}
         ]
       );
   
-      awaitingReceipt[chatId] = false;  // Завершаем ожидание чека
+      awaitingReceipt[chatId] = false;
   
       return;
     } else if (awaitingToChangeProduct[chatId]) {
+      const type = awaitingToChangeProduct[chatId].type;
+      const currentProducts = getCurrentProducts(type);
       const product = awaitingToChangeProduct[chatId].product;
-      const productId = awaitingToChangeProduct[chatId].productId;
+
       const newPrice = parseFloat(msg.text);
       if (isNaN(newPrice)) {
           bot.sendMessage(chatId, 'Пожалуйста, введите корректную цену.');
           return;
       }
   
-      // Обновляем цену товара
       product.price = newPrice;
-      productId.price = newPrice * idCom;
-      database.ref('products').set(products)
+
+      database.ref(`products${capitalizeFirstLetter(type)}`).set(currentProducts)
       .then(() => {
           bot.sendMessage(chatId, `Цена товара ${product.label} была изменена на ${newPrice}$.`);
       })
@@ -894,35 +901,30 @@ ${paymentDetails.card}
       return;
     } else if (awaitingNewProductLabel[chatId]) {
       const newLabel = msg.text;
+      const type = awaitingNewProductLabel[chatId].type;
+
       bot.sendMessage(chatId, `Введите цену для нового товара (${newLabel}): `);
   
       awaitingNewProductLabel[chatId] = false;
-      awaitingNewProductPrice[chatId] = {newLabel};
+      awaitingNewProductPrice[chatId] = {type, newLabel};
       
       return;
     } else if (awaitingNewProductPrice[chatId]) {
+      const type = awaitingNewProductPrice[chatId].type;
       const newLabel = awaitingNewProductPrice[chatId].newLabel
       const newPrice = parseFloat(msg.text);
       if (isNaN(newPrice)) {
         bot.sendMessage(chatId, 'Пожалуйста, введите корректную цену');
         return;
       }
-  
-      products.push({label: newLabel, price: newPrice});
 
-      productsId.push({label: newLabel, price: newPrice * idCom})
-  
-      products.sort((a, b) => {
+      const currentProducts = getCurrentProducts(type);
+      currentProducts.push({label: newLabel, price: newPrice});
+      currentProducts.sort((a, b) => {
         return parseInt(a.label, 10) - parseInt(b.label, 10);
       });
 
-      productsId.sort((a, b) => {
-        return parseInt(a.label, 10) - parseInt(b.label, 10);
-      });
-  
-  
-      database.ref('products').set(products)
-      .then(() => {
+      updateProducts(type, currentProducts).then(() => {
           bot.sendMessage(chatId, `Новый товар ${newLabel} был добавлен по цене ${newPrice}`);
       })
       .catch((error) => {
@@ -937,7 +939,6 @@ ${paymentDetails.card}
       const method = awaitingToChangeCredentials[chatId];
       const newValue = msg.text;
     
-      // Обновляем только выбранный метод
       paymentDetails[method] = newValue;
     
       database.ref('paymentDetails').update(paymentDetails)
@@ -957,7 +958,7 @@ ${paymentDetails.card}
       delete awaitingToChangeCredentials[chatId];
       return;
     } else if (awaitingUserToChangeBalance[chatId]) {
-      const userId = msg.text; // Получаем ID пользователя
+      const userId = msg.text;
       
       bot.sendMessage(chatId, `Баланс пользователя ${userBalances[userId]}. Введите новую сумму для баланса:`);
   
@@ -966,7 +967,7 @@ ${paymentDetails.card}
       
       return;
     } else if (awaitingToChangeBalance[chatId]) {
-      const newBalance = parseFloat(msg.text); // Получаем новую сумму
+      const newBalance = parseFloat(msg.text);
       const userId = awaitingToChangeBalance[chatId].userId
   
       if (isNaN(newBalance)) {
@@ -975,7 +976,7 @@ ${paymentDetails.card}
       }
   
       if (userBalances[userId] || userBalances[userId] === 0) {
-        userBalances[userId] = newBalance; // Обновляем баланс пользователя
+        userBalances[userId] = newBalance;
         database.ref('userBalances').set(userBalances)
           .then(() => {
             bot.sendMessage(chatId, `Баланс пользователя с ID ${userId} был изменен на ${newBalance}$.`, {
@@ -1009,13 +1010,11 @@ ${paymentDetails.card}
             return bot.sendMessage(chatId, 'Нет пользователей для рассылки.');
           }
   
-          // Разослать сообщение каждому пользователю
           const userIds = Object.keys(userBalances);
           for (const userId of userIds) {
             try {
               await bot.sendMessage(userId, broadcastMessage);
             } catch (error) {
-              // Если ошибка связана с превышением лимита запросов, обрабатываем её
               if (error.response && error.response.statusCode === 429) {
                 const retryAfter = error.response.body.parameters.retry_after || 1;
                 console.log(`Превышен лимит запросов, повтор через ${retryAfter} секунд...`);
@@ -1023,7 +1022,6 @@ ${paymentDetails.card}
               }
             }
         
-            // Добавляем задержку между сообщениями, чтобы не превысить лимит Telegram
             await new Promise(resolve => setTimeout(resolve, 100));
           }
   
@@ -1047,7 +1045,6 @@ ${paymentDetails.card}
         return;
       }
       if (!admins[newAdminId]) {
-        // Добавляем нового администратора в список
         admins[newAdminId] = true;
         database.ref('admins').set(admins)
           .then(() => {
@@ -1091,12 +1088,10 @@ ${paymentDetails.card}
     } else if (awaitingToRemoveAdmin[chatId]) {
       const adminIdToRemove = msg.text;
             
-      // Проверяем, что этот пользователь действительно является администратором
       if (admins[adminIdToRemove]) {
         if (adminIdToRemove === ADMIN_CHAT_ID) {
           bot.sendMessage(chatId, 'Нельзя удалить главного администратора');
         } else {
-          // Удаляем администратора из списка
           delete admins[adminIdToRemove];
           database.ref('admins').set(admins)
               .then(() => {
@@ -1179,7 +1174,6 @@ ${paymentDetails.card}
   }
 });
 
-// Обработка нажатий на inline-кнопки
 bot.on('callback_query', async (query) => {
   try {
 
@@ -1190,12 +1184,10 @@ bot.on('callback_query', async (query) => {
     const usdRate = cbrData.usdRate
   
     if (userBalances[chatId] === undefined) {
-      userBalances[chatId] = 0;  // Устанавливаем начальный баланс для новых пользователей
+      userBalances[chatId] = 0;
     }
   
-    // Проверяем нажатие на кнопки администратора
     if (data === 'return') {
-      // Сбрасываем все ожидания
       awaitingPubgId[chatId] = false;
       awaitingDeposit[chatId] = false;
       awaitingReceipt[chatId] = false;
@@ -1214,56 +1206,59 @@ bot.on('callback_query', async (query) => {
       cryptobotDeposits[chatId] = false;
       database.ref('cryptobotDeposits').set(cryptobotDeposits);
   
-      // Возвращаем главное меню
       sendMainMessage(chatId, query.message.chat.first_name, query.message.chat.last_name, messageId);
       
       return;
     } else if (data === 'open-shop') {
-      await bot.editMessageCaption('Выберите каким способом вы хотите получить UC', {
+      await bot.editMessageCaption('Выберите тип товара', {
         chat_id: chatId,
         message_id: messageId,
-        reply_markup: {inline_keyboard: [
-          [{text: 'Получить кодами', callback_data: 'open-shop-codes'}],
-          [{text: 'Получить по id', callback_data: 'open-shop-id'}],
-          [{text: '🔙 Назад', callback_data: 'return'}]
-        ]}
+        reply_markup: {
+          inline_keyboard: [
+            [{text: 'UC', callback_data: 'open-catalog_uc'}],
+            [{text: 'Популярность', callback_data: 'open-catalog_popularity'}],
+            [{text: 'Подписки', callback_data: 'open-catalog_subs'}],
+            [{text: '🔙 Назад', callback_data: 'return'}]
+          ]
+        }
       })
-  
-      return;
-    } else if (data === 'open-shop-codes') {
-      const inlineKeyboard = await generateShopKeyboard(userCarts[chatId], 'codes')
-      await bot.editMessageMedia({
-        type: 'photo',
-        media: IMAGES.pack,
-        caption: generateCartText(userCarts[chatId]),
-        parse_mode: 'HTML'
-      }, {
-        chat_id: chatId,
-        message_id: messageId,
-        reply_markup: {
-          inline_keyboard: inlineKeyboard
+    } else if (data.startsWith('open-catalog_')) {
+      const productType = data.split('_')[1];
+
+      delete userCarts[chatId];
+
+      if (productType === 'uc') {
+        await bot.editMessageCaption('Выберите каким способом вы хотите получить UC', {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: {inline_keyboard: [
+            [{text: 'Получить кодами', callback_data: 'open-catalog_codes'}],
+            [{text: 'Получить по id', callback_data: 'open-catalog_id'}],
+            [{text: '🔙 Назад', callback_data: 'open-shop'}]
+          ]}
+        })
+      } else {
+        const inlineKeyboard = await generateShopKeyboard(userCarts[chatId], productType);
+        await bot.editMessageMedia({
+          type: 'photo',
+          media: IMAGES.pack,
+          caption: generateCartText(userCarts[chatId], productType),
+          parse_mode: 'HTML'
+        }, {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: {
+            inline_keyboard: inlineKeyboard
+          }
+        });
         }
-      });
-    } else if (data === 'open-shop-id') {
-      const inlineKeyboard = await generateShopKeyboard(userCarts[chatId], 'id')
-      await bot.editMessageMedia({
-        type: 'photo',
-        media: IMAGES.pack,
-        caption: generateCartText(userCarts[chatId]),
-        parse_mode: 'HTML'
-      }, {
-        chat_id: chatId,
-        message_id: messageId,
-        reply_markup: {
-          inline_keyboard: inlineKeyboard
-        }
-      });
+
+        return;
     } else if (data === 'admin-panel') {
       if (!isAdmin(chatId)) {
         await bot.answerCallbackQuery(query.id, {text: '❌ Доступ запрещен!'});
         return;
       }
-        // Сбрасываем все ожидания
         awaitingPubgId[chatId] = false;
         awaitingDeposit[chatId] = false;
         awaitingReceipt[chatId] = false;
@@ -1297,28 +1292,45 @@ bot.on('callback_query', async (query) => {
 
       return;
   
-    } else if (data === 'manage-products') {
-      const productsManagementKeyboard = (products) => {
-        const buttons = products.map(p => ({
-          text: `${p.label} UC - ${p.price}$`,
-          callback_data: `edit-product_${p.label}`
+    } else if (data === 'manage-category') {
+      await bot.editMessageCaption('🛠 Выберите категорию товаров для изменения', {
+        chat_id: chatId,
+        message_id: messageId,
+        reply_markup: {
+          inline_keyboard: [
+            [{text: 'Коды', callback_data: 'manage-products_codes'}],
+            [{text: 'По ID', callback_data: 'manage-products_id'}],
+            [{text: 'Популярность', callback_data: 'manage-products_popularity'}],
+            [{text: 'Подписки', callback_data: 'manage-products_subs'}],
+            [{text: '🔙 Назад', callback_data: 'admin-panel'}]
+          ]
+        }
+      })
+    } else if (data.startsWith('manage-products_')) {
+      const type = data.split('_')[1];
+      const currentProducts = getCurrentProducts(type);
+
+      const productsManagementKeyboard = (currentProducts) => {
+        const buttons = currentProducts.map(p => ({
+          text: `${p.label} - ${p.price}$`,
+          callback_data: `edit-product_${type}_${p.label}`
         }));
         
         const chunks = [];
         while (buttons.length) chunks.push(buttons.splice(0, 2));
         
         chunks.push(
-          [{text: '➕ Добавить товар', callback_data: 'add-product'}, {text: '➖ Удалить товар', callback_data: 'delete-product'}],
+          [{text: '➕ Добавить товар', callback_data: `add-product_${type}`}, {text: '➖ Удалить товар', callback_data: `delete-product-list_${type}`}],
           [{text: '🔙 Назад', callback_data: 'admin-panel'}]
         );
         
         return chunks;
       };
 
-      await bot.editMessageCaption('🛠 Управление товарами:', {
+      await bot.editMessageCaption(`🛠 Управление товарами (Категория: ${type}):`, {
         chat_id: chatId,
         message_id: messageId,
-        reply_markup: {inline_keyboard: productsManagementKeyboard(products)}
+        reply_markup: {inline_keyboard: productsManagementKeyboard(currentProducts)}
       });
   
       return;
@@ -1366,8 +1378,9 @@ bot.on('callback_query', async (query) => {
       })
   
       return;
-    } else if (data === 'add-product') {
-      awaitingNewProductLabel[chatId] = true;
+    } else if (data.startsWith('add-product_')) {
+      const type = data.split('_')[1];
+      awaitingNewProductLabel[chatId] = {type};
 
       await bot.editMessageCaption('Введите название нового товара:', {
         chat_id: chatId,
@@ -1376,13 +1389,14 @@ bot.on('callback_query', async (query) => {
       })
   
       return;
-    } else if (data === 'delete-product') {
-      const productButtons = products.map(product => ({
-        text: `${product.label} UC - ${product.price}$`,  // Отображаем метку и имя товара
-        callback_data: `delete-product_${product.label}`  // Уникальный callback_data для каждого товара
+    } else if (data.startsWith('delete-product-list_')) {
+      const type = data.split('_')[1];
+
+      const productButtons = getCurrentProducts(type).map(product => ({
+        text: `${product.label} - ${product.price}$`,
+        callback_data: `delete-product_${type}_${product.label}`
       }));
   
-      // Разбиваем кнопки на строки по 2 кнопки в каждой строке
       const deleteProductsKeyboard = [];
       for (let i = 0; i < productButtons.length; i += 2) {
         deleteProductsKeyboard.push(productButtons.slice(i, i + 2));
@@ -1488,7 +1502,6 @@ bot.on('callback_query', async (query) => {
             .map(([orderId, order]) => {
                 let details = '';
                 if (order.type === 'codes') {
-                    // Форматируем коды для отображения
                     const codesText = Object.entries(order.codes)
                         .map(([label, codes]) => `➥ ${label} UC:\n${codes.join('\n')}`)
                         .join('\n\n');
@@ -1539,16 +1552,13 @@ ${details}`;
       if (userInfo) {
         const depositAmount = userInfo.amount;
   
-        // Обновляем баланс пользователя
         userBalances[userId] = (userBalances[userId] || 0) + depositAmount;
   
         database.ref('userBalances').set(userBalances);
   
-        // Оповещаем администратора и пользователя
         sendDepositRequest(`Пополнение на ${depositAmount}$ для ${userInfo.userTag} (ID: ${userId}) подтверждено.`)
         bot.sendMessage(userId, `Ваш баланс был пополнен на ${depositAmount}$. Текущий баланс: ${userBalances[userId]}$.`);
   
-        // Очищаем информацию о запросе
         delete pendingChecks[userId];
         database.ref('pendingChecks').set(pendingChecks);
       }
@@ -1565,7 +1575,7 @@ ${details}`;
             break;
             
           case 'buy-with-id':
-            await purchaseWithId(chatId, messageId);
+            await purchaseWithId(chatId, messageId, type);
             break;
             
           case 'buy-codes':
@@ -1575,7 +1585,8 @@ ${details}`;
         return;
     } else if (data.startsWith('add-to-cart_')) {
       const [, label, price, type] = data.split('_');
-      const product = products.find(p => p.label === label);
+      const currentProducts = getCurrentProducts(type);
+      const product = currentProducts.find(p => p.label === label);
       
       if (!userCarts[chatId]) {
         userCarts[chatId] = {
@@ -1598,30 +1609,16 @@ ${details}`;
       }
   
       if (userInfo) {
-        // Оповещаем администратора и пользователя об отмене
         sendDepositRequest(`Пополнение на ${userInfo.amount}$ для ${userInfo.userTag} (ID: ${userId}) отменено.`)
         bot.sendMessage(userId, `Ваше пополнение на сумму ${userInfo.amount}$ было отклонено. Пожалуйста, попробуйте снова.`);
   
-        // Очищаем информацию о запросе
         delete pendingChecks[userId];
         database.ref('pendingChecks').set(pendingChecks);
       }
       
       return;
-    } else if (data.startsWith('buy_')) {
-      const [, label, price] = data.split('_');; // Получаем метку товара (например, 60)
-      const numericPrice = Number(price);
-      
-      // Запросить у пользователя его ID в PUBG
-      bot.sendMessage(chatId, `Вы выбрали товар: ${label}UC за ${numericPrice}$. Пожалуйста, введите ваш ID в PUBG:`);
-      
-      // Сохраняем информацию о покупке и ожидаем ввода PUBG ID
-      awaitingPubgId[chatId] = { label, price: numericPrice }; // Пример логики цены
-      awaitingDeposit[chatId] = false; // Остановить ожидание депозита, если оно было активным
-      
-      return;
     } else if (data.startsWith('order-completed_')) {
-      const [, userId, orderId] = query.data.split('_'); // Получаем ID покупателя из callback_data
+      const [, userId, orderId] = query.data.split('_');
       const message = query.message;
   
       if (!isAdmin(query.from.id)) {
@@ -1636,10 +1633,8 @@ ${details}`;
         });
   
         if (customersOrders[userId]) {
-            // Сообщаем администратору о выполнении заказа
             sendOrderRequest(`Заказ для пользователя с ID ${userId} был выполнен.`)
         
-            // Сообщаем покупателю, что его заказ выполнен
             bot.sendMessage(userId, '✅Заказ выполнен', {reply_markup: {
               inline_keyboard: [
                 [{text: '🔙 В главное меню', callback_data: 'return'}]
@@ -1658,7 +1653,7 @@ ${details}`;
   
       return;
     } else if (data.startsWith('order-declined_')) {
-      const [, userId, orderId, amount] = query.data.split('_'); // Получаем ID покупателя из callback_data
+      const [, userId, orderId, amount] = query.data.split('_');
       const message = query.message;
 
       if (!isAdmin(query.from.id)) {
@@ -1673,13 +1668,10 @@ ${details}`;
         });
   
         if (customersOrders[userId]) {
-            // Сообщаем администратору о выполнении заказа
-
             userBalances[userId] += Math.round(parseFloat(amount) * 100) / 100;
 
             sendOrderRequest(`❌ Заказ для пользователя с ID ${userId} был отменен.`)
         
-            // Сообщаем покупателю, что его заказ выполнен
             bot.sendMessage(userId, '⛔️Ваш заказ отклонён, причину узнайте у администратора', {reply_markup: {
               inline_keyboard: [
                 [{text: '🔙 В главное меню', callback_data: 'return'}]
@@ -1697,15 +1689,15 @@ ${details}`;
 
       return;
     } else if (data.startsWith('edit-product_')) {
-      const label = data.replace('edit-product_', '');
+      const [, type, label] = data.split('_');
   
       if (!isAdmin(query.from.id)) {
         return
       }
   
-      // Проверка наличия товара
-      const product = products.find(p => p.label === label);
-      const productId = productsId.find(p => p.label === label);
+      const currentProducts = getCurrentProducts(type);
+      const product = currentProducts.find(p => p.label === label);
+
       if (!product) {
           bot.sendMessage(chatId, `Товар с меткой ${label} не найден.`);
           return;
@@ -1713,31 +1705,29 @@ ${details}`;
   
       bot.sendMessage(chatId, `Введите новую цену для товара ${label} UC:`);
   
-      awaitingToChangeProduct[chatId] = {product, productId}
+      awaitingToChangeProduct[chatId] = {type, product}
   
       return;
     } else if (data.startsWith('delete-product_')) {
-      const labelToDelete = data.replace('delete-product_', '');
+      const [, type, labelToDelete] = data.split('_');
   
       if (!isAdmin(query.from.id)) {
         return
       }
+
+      const currentProducts = getCurrentProducts(type);
   
-      // Проверка наличия товара
-      const product = products.find(p => p.label === labelToDelete);
+      const product = currentProducts.find(p => p.label === labelToDelete);
       if (!product) {
           bot.sendMessage(chatId, `Товар с меткой ${labelToDelete} не найден.`);
           return;
       }
   
-      const index = products.findIndex(product => product.label === labelToDelete);
+      const index = currentProducts.findIndex(product => product.label === labelToDelete);
   
-    // Проверяем, найден ли товар
       if (index !== -1) {
-        // Удаляем товар из массива
-        products.splice(index, 1);
-        productsId.splice(index, 1)
-        database.ref('products').set(products)
+        currentProducts.splice(index, 1);
+        updateProducts(type, currentProducts)
         .then(() => {
             bot.sendMessage(chatId, `Товар ${labelToDelete}UC был удален.`);
         })
@@ -1753,7 +1743,7 @@ ${details}`;
   
       return;
     } else if (data === 'manage-codes') {
-      const productsKeyboard = products.map(p => ({
+      const productsKeyboard = productsCodes.map(p => ({
         text: `${p.label} UC`,
         callback_data: `add-codes_${p.label}`
       }));
@@ -1774,7 +1764,6 @@ ${details}`;
       const productLabel = data.split('_')[1];
       awaitingCodesForProduct[chatId] = productLabel;
     
-      // Получаем текущие неиспользованные коды для этого продукта
       try {
         const unusedCodesSnapshot = await database.ref(`codes/${productLabel}`)
           .orderByChild('used')
@@ -1783,14 +1772,12 @@ ${details}`;
     
         const unusedCodes = unusedCodesSnapshot.val() || {};
     
-        // Форматируем список неиспользованных кодов
         let unusedCodesMessage = `📋 Текущие неиспользованные коды для ${productLabel} UC:\n`;
     
         Object.values(unusedCodes).forEach((codeData, index) => {
           unusedCodesMessage += `${index + 1}. <code>${codeData.code}</code>\n`;
         });
     
-        // Отправляем сообщение с неиспользованными кодами
         await bot.sendMessage(chatId, unusedCodesMessage, {
           parse_mode: 'HTML'
         });
@@ -1800,7 +1787,6 @@ ${details}`;
         await bot.sendMessage(chatId, '❌ Ошибка при получении неиспользованных кодов');
       }
     
-      // Запрашиваем новые коды
       await bot.editMessageCaption(`Отправьте коды для ${productLabel} UC (по одному в строке):`, {
         chat_id: chatId,
         message_id: messageId,
@@ -1808,7 +1794,6 @@ ${details}`;
       })
 
     } else if (data === 'deposit') {
-      // Бот запрашивает сумму для пополнения
       bot.editMessageMedia({
         type: 'photo',
         media: IMAGES.payment,
@@ -1843,7 +1828,7 @@ ${details}`;
         }
       })
   
-      awaitingDeposit[chatId] = true;  // Ожидание суммы для пополнения
+      awaitingDeposit[chatId] = true;
       
       return
     } else if (data === 'deposit-with-cryptobot') {
@@ -1864,7 +1849,6 @@ ${details}`;
       }
       )
   
-      // Собираем полное имя пользователя
       const firstName = query.message.chat.first_name || '';
       const lastName = query.message.chat.last_name || '';
       const fullName = `${firstName}${lastName ? ' ' + lastName : ''}`.trim();
@@ -1872,7 +1856,7 @@ ${details}`;
       cryptobotDeposits[chatId] = {
           userId: chatId,
           messageId: messageId,
-          username: fullName // Теперь содержит "Имя Фамилия" или только "Имя"
+          username: fullName
       };
   
       database.ref('cryptobotDeposits').set(cryptobotDeposits);
@@ -1905,8 +1889,3 @@ ${details}`;
     }
   }
 });
-
-// Запуск бота
-// app.listen(port, () => {
-//   console.log(`Server is running on port ${port}`);
-// });
