@@ -348,7 +348,7 @@ async function purchaseWithId(chatId, messageId, type) {
     type: type
   };
 
-  bot.editMessageCaption('✦ Отправьте игровой ID для зачисления товара! ', {
+  await bot.editMessageCaption('✦ Отправьте игровой ID для зачисления товара! ', {
     chat_id: chatId,
     message_id: messageId,
     reply_markup: {
@@ -701,7 +701,7 @@ bot.on('message', async (msg) => {
     if (awaitingPubgId[chatId]) {
       const pubgId = text;
   
-      const cart = awaitingPubgId[chatId].type;
+      const cart = awaitingPubgId[chatId].cart;
       const type = awaitingPubgId[chatId].type;
   
       const orderNumber = Date.now().toString(36).toUpperCase() + chatId.toString().slice(-4);
@@ -719,7 +719,7 @@ bot.on('message', async (msg) => {
           .join('\n');
   
       userBalances[chatId] -= cart.total;
-      database.ref(`userBalances/${chatId}`).set(userBalances[chatId]);
+      await database.ref(`userBalances/${chatId}`).set(userBalances[chatId]);
   
       const orderData = {
         orderId: orderNumber,
