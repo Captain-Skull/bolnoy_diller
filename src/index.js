@@ -20,6 +20,24 @@ const serviceAccount = require('../secrets/serviceAccountKey.json');
 const token = process.env.token;
 const bot = new TelegramApi(token, {polling: true});
 
+bot.on('polling_error', (error => {
+  console.error('Polling error: ', error.code, error.message);
+}))
+
+bot.on('error', (error) => {
+  console.error('Bot error: ', error.code, error.message);
+})
+
+// eslint-disable-next-line no-undef
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught exception: ', error); 
+})
+
+// eslint-disable-next-line no-undef
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled rejection at: ', promise, 'reason: ', reason);
+})
+
 const firebaseConfig = {
   credential: admin.credential.cert(serviceAccount),
   databaseURL: "https://bolnoy-shop-default-rtdb.europe-west1.firebasedatabase.app"
