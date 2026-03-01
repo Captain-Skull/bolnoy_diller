@@ -18,7 +18,26 @@ require('firebase/database');
 const serviceAccount = require('../secrets/serviceAccountKey.json');
 // eslint-disable-next-line no-undef
 const token = process.env.token;
+// eslint-disable-next-line no-undef
+const PORT = process.env.PORT;
 const bot = new TelegramApi(token, {polling: true});
+
+app.post(`/bolnoy_diller`, (req, res) => {
+  bot.processUpdate(req.body);
+  res.sendStatus(200);
+});
+
+app.listen(PORT, '127.0.0.1', () => {
+  console.log(`Bot server running on port ${PORT}`);
+
+// eslint-disable-next-line no-undef
+  const certPath = process.env.CERT_PATH;
+  bot.setWebHook(`https://45.11.92.151:8443/bolnoy_diller`, {
+    certificate: certPath
+  }).then(() => {
+    console.log('Webhook set successfully');
+  });
+});
 
 bot.on('polling_error', (error => {
   console.error('Polling error: ', error.code, error.message);
