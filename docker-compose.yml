@@ -1,0 +1,11 @@
+services:
+  bot:
+    build: .
+    container_name: bolnoy-diller
+    restart: unless-stopped
+    env_file: .env
+    mem_limit: 256m
+    environment:
+      NODE_OPTIONS: --max-old-space-size=192
+    volumes:
+      - ./secrets:/app/secrets:ro

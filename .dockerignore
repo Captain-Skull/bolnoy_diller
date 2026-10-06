@@ -1,0 +1,13 @@
+node_modules
+dist
+.env
+secrets
+.git
+.gitignore
+.claude
+.claude-flow
+.vscode
+.DS_Store
+Dockerfile
+.dockerignore
+docker-compose.yml
